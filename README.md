@@ -4,7 +4,7 @@
 1. 修改python-can路径下的can/interfaces/__init__.py文件, 在BACKENDS字典中添加一行:
 
    ```
-   "zlgcan": ("can.interfaces.hhs", "HhsBus"),
+   "hhs": ("can.interfaces.hhs", "HhsBus"),
    ```
 
-2. 将zlgcan文件夹拷贝到can/interfaces/文件夹下
+2. 将hhs文件夹拷贝到can/interfaces/文件夹下
