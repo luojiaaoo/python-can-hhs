@@ -7,7 +7,6 @@ from typing import Optional, List
 from can import BusABC
 from can.typechecking import CanFilters
 from queue import Queue, Empty
-from common.lib.share import SI
 from can.exceptions import CanOperationError, CanError
 import can
 
