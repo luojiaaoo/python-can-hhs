@@ -297,9 +297,9 @@ class HhsBus(BusABC):
         try:
             msg = self.queue_recv.get(block=True, timeout=timeout)
         except Empty:
-            return None, self._is_filtered or True
+            return None, self._is_filtered
         else:
-            return msg, self._is_filtered or True
+            return msg, self._is_filtered
 
     def __recv_send_batch(self, event):
         while not event.is_set():
