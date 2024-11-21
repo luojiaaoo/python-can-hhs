@@ -248,7 +248,7 @@ class HhsBus(BusABC):
             data_bitrate: int = 2000000,
             receive_own_messages: bool = False,
             can_filters: Optional[CanFilters] = None,
-            retry_when_send_fail: bool = False,
+            retry_when_send_fail: bool = True,
             auto_reconnect: bool = True,
             only_listen_mode: bool = False,
             m120=False,
@@ -331,6 +331,9 @@ class HhsBus(BusABC):
             for i in range(read_size):
                 msg_hhs = self.read_canmsg.STRUCT_ARRAY[i]
                 frame_type = msg_hhs.FrameType
+                # 发送失败的报文
+                if bool(frame_type & 0b10):
+                    continue
                 len = self.DLC2BYTE_LEN[msg_hhs.DLC]
                 msg = can.Message(
                     is_fd=True if frame_type & 0b100 else False,
