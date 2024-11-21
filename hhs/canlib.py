@@ -370,8 +370,8 @@ class HhsBus(BusABC):
                 self.channel,
                 i,
                 1,  # 32位过滤器
-                (can_id >> 3) if extended else (can_id << 21),
-                (can_mask >> 3) if extended else (can_mask << 21),
+                (can_id << 3) if extended else (can_id << 21),
+                (can_mask << 3) if extended else (can_mask << 21),
                 1  # 使能
             )
             self.filter_num = i
