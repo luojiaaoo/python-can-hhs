@@ -307,7 +307,6 @@ class HhsBus(BusABC):
             send_size = self.queue_send.qsize()
             if send_size:
                 send_size = send_size if send_size <= 100 else 100  # 单次最多100帧
-
                 for i in range(send_size):
                     msg: can.Message = self.queue_send.get()
                     data_msg = self.__trans_data(msg.data, msg.dlc)
@@ -345,6 +344,7 @@ class HhsBus(BusABC):
                     channel=self.channel,
                     is_remote_frame=bool(msg_hhs.RemoteFlag),
                     is_rx=False if frame_type & 1 else True,
+                    is_error_frame=bool(msg_hhs.ErrSatus)
                 )
                 self.queue_recv.put(msg)
             event.wait(timeout=0.001)
