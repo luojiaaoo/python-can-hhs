@@ -3,12 +3,22 @@ import ctypes
 import logging
 import os
 import threading
-from typing import Optional, List
+from typing import Optional
 from can import BusABC
 from can.typechecking import CanFilters
-from queue import Queue, Empty
+from queue import Queue
 from can.exceptions import CanOperationError, CanError
 import can
+import time
+
+try:
+    from _overlapped import CreateEvent
+    from _winapi import WaitForSingleObject
+
+    HAS_EVENTS = True
+except ImportError:
+    WaitForSingleObject = None
+    HAS_EVENTS = False
 
 log = logging.getLogger("can.hhs")
 
@@ -281,34 +291,22 @@ class HhsBus(BusABC):
         CANFD_Init(ctypes.c_uint(channel), canfd_config)
         # 硬件过滤器
         self.filter_num = None
-        # 启动接收发送线程
-        self.event_recv_send_batch = threading.Event()
-        threading.Thread(None, target=self.__recv_send_batch, args=(self.event_recv_send_batch,)).start()
         super().__init__(
             channel=channel,
             can_filters=can_filters,
             **kwargs,
         )
-
-    def send(self, msg: can.Message, timeout=None):
-        self.queue_send.put(msg)
-
-    def _recv_internal(self, timeout=None):
-        try:
-            msg = self.queue_recv.get(block=True, timeout=timeout)
-        except Empty:
-            return None, self._is_filtered
-        else:
-            return msg, self._is_filtered
+        # 启动发送线程
+        self._recv_event = CreateEvent(None, 0, 0, None) if HAS_EVENTS else None
+        self.event_send_batch = threading.Event()
+        threading.Thread(None, target=self.__recv_send_batch, args=(self.event_send_batch,)).start()
 
     def __recv_send_batch(self, event):
         while not event.is_set():
-            # 发送
-            send_size = self.queue_send.qsize()
-            if send_size:
-                send_size = send_size if send_size <= 100 else 100  # 单次最多100帧
+            send_size = min(self.queue_send.qsize(), 100)
+            if send_size > 0:
                 for i in range(send_size):
-                    msg: can.Message = self.queue_send.get()
+                    msg = self.queue_send.get()
                     data_msg = self.__trans_data(msg.data, msg.dlc)
                     self.send_canmsg.STRUCT_ARRAY[i].ID = msg.arbitration_id
                     self.send_canmsg.STRUCT_ARRAY[i].TimeStamp = 0
@@ -325,33 +323,47 @@ class HhsBus(BusABC):
                     for j in range(msg.dlc):
                         self.send_canmsg.STRUCT_ARRAY[i].Data[j] = data_msg[j]
                 CANFD_Transmit(self.channel, ctypes.byref(self.send_canmsg.ADDR), send_size, 100)  # 默认100毫秒超时
-            # 接收
-            read_size = CANFD_Receive(self.channel, ctypes.byref(self.read_canmsg.ADDR), 2500, 100)  # 最多接收2500帧 默认100毫秒超时
-            for i in range(read_size):
-                msg_hhs = self.read_canmsg.STRUCT_ARRAY[i]
-                frame_type = msg_hhs.FrameType
-                # 发送失败的报文
-                if bool(frame_type & 0b10):
-                    continue
-                len = self.DLC2BYTE_LEN[msg_hhs.DLC]
-                msg = can.Message(
-                    is_fd=True if frame_type & 0b100 else False,
-                    timestamp=float(msg_hhs.TimeStamp) / 1000000,
-                    is_extended_id=bool(msg_hhs.ExternFlag),
-                    arbitration_id=msg_hhs.ID,
-                    data=[msg_hhs.Data[j] for j in range(len)],
-                    dlc=len,
-                    channel=self.channel,
-                    is_remote_frame=bool(msg_hhs.RemoteFlag),
-                    is_rx=False if frame_type & 1 else True,
-                    is_error_frame=bool(msg_hhs.ErrSatus)
-                )
-                self.queue_recv.put(msg)
-            event.wait(timeout=0.001)
+            if HAS_EVENTS:
+                WaitForSingleObject(self._recv_event, 1)
+            else:
+                time.sleep(0.001)
+
+    def send(self, msg: can.Message, timeout=None):
+        self.queue_send.put(msg)
+
+    def _recv_internal(self, timeout=None):
+        if self.queue_recv.qsize() > 0:
+            return self.queue_recv.get(), self._is_filtered
+        read_size = CANFD_Receive(self.channel, ctypes.byref(self.read_canmsg.ADDR), 2500,
+                                  0xFFF if timeout is None else max(int(timeout * 1000), 100))  # 最多接收2500帧 默认100毫秒超时
+        for i in range(read_size):
+            msg_hhs = self.read_canmsg.STRUCT_ARRAY[i]
+            frame_type = msg_hhs.FrameType
+            # 发送失败的报文
+            if bool(frame_type & 0b10):
+                continue
+            len = self.DLC2BYTE_LEN[msg_hhs.DLC]
+            msg = can.Message(
+                is_fd=True if frame_type & 0b100 else False,
+                timestamp=float(msg_hhs.TimeStamp) / 1000000,
+                is_extended_id=bool(msg_hhs.ExternFlag),
+                arbitration_id=msg_hhs.ID,
+                data=[msg_hhs.Data[j] for j in range(len)],
+                dlc=len,
+                channel=self.channel,
+                is_remote_frame=bool(msg_hhs.RemoteFlag),
+                is_rx=False if frame_type & 1 else True,
+                is_error_frame=bool(msg_hhs.ErrSatus)
+            )
+            self.queue_recv.put(msg)
+        if self.queue_recv.qsize() > 0:
+            return self.queue_recv.get(), self._is_filtered
+        else:
+            return None, self._is_filtered
 
     def shutdown(self):
         super().shutdown()
-        self.event_recv_send_batch.set()
+        self.event_send_batch.set()
         CAN_CloseDevice(self.channel)
 
     def _apply_filters(self, filters):
